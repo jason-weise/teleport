@@ -197,6 +197,10 @@ type Server struct {
 	// x11 is the X11 forwarding configuration for the server
 	x11 *x11.ServerConfig
 
+	// allowFileCopying indicates whether the ssh server is allowed to handle
+	// remote file operations via SCP or SFTP.
+	allowFileCopying bool
+
 	// lockWatcher is the server's lock watcher.
 	lockWatcher *services.LockWatcher
 
@@ -631,6 +635,15 @@ func SetNodeWatcher(nodeWatcher *services.NodeWatcher) ServerOption {
 func SetX11ForwardingConfig(xc *x11.ServerConfig) ServerOption {
 	return func(s *Server) error {
 		s.x11 = xc
+		return nil
+	}
+}
+
+// SetAllowFileCopying sets whether the server is allowed to handle
+// SCP/SFTP requests.
+func SetAllowFileCopying(allow bool) ServerOption {
+	return func(s *Server) error {
+		s.allowFileCopying = allow
 		return nil
 	}
 }
@@ -1319,6 +1332,7 @@ func (s *Server) handleDirectTCPIPRequest(ctx context.Context, ccx *sshutils.Con
 	scx.ChannelType = teleport.ChanDirectTCPIP
 	scx.SrcAddr = net.JoinHostPort(req.Orig, strconv.Itoa(int(req.OrigPort)))
 	scx.DstAddr = net.JoinHostPort(req.Host, strconv.Itoa(int(req.Port)))
+	scx.SetAllowFileCopying(s.allowFileCopying)
 	defer scx.Close()
 
 	channel = scx.TrackActivity(channel)
@@ -1455,6 +1469,7 @@ func (s *Server) handleSessionRequests(ctx context.Context, ccx *sshutils.Connec
 	scx.IsTestStub = s.isTestStub
 	scx.AddCloser(ch)
 	scx.ChannelType = teleport.ChanSession
+	scx.SetAllowFileCopying(s.allowFileCopying)
 	defer scx.Close()
 
 	ch = scx.TrackActivity(ch)
@@ -1870,6 +1885,7 @@ func (s *Server) handleProxyJump(ctx context.Context, ccx *sshutils.ConnectionCo
 	}
 	scx.IsTestStub = s.isTestStub
 	scx.AddCloser(ch)
+	scx.SetAllowFileCopying(s.allowFileCopying)
 	defer scx.Close()
 
 	ch = scx.TrackActivity(ch)
@@ -1992,6 +2008,10 @@ func (s *Server) parseSubsystemRequest(req *ssh.Request, ctx *srv.ServerContext)
 	case s.proxyMode && strings.HasPrefix(r.Name, "proxysites"):
 		return parseProxySitesSubsys(r.Name, s)
 	case r.Name == sftpSubsystem:
+		if err := ctx.CheckFileCopyingAllowed(); err != nil {
+			return nil, trace.Wrap(err)
+		}
+
 		return newSFTPSubsys()
 	default:
 		return nil, trace.BadParameter("unrecognized subsystem: %v", r.Name)
